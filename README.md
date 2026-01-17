@@ -20,6 +20,7 @@
 </p>
 
 ---
+<img width="969" height="953" alt="Screenshot 2026-01-17 at 12 05 57 PM" src="https://github.com/user-attachments/assets/814ec57a-e637-4a33-b2d6-f3bf0d5ac389" />
 
 ## Why Claw?
 
