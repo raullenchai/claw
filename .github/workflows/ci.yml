@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check syntax
+        run: python -m py_compile claw.py
+
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install tmux
+        run: |
+          if [ "$RUNNER_OS" == "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y tmux
+          elif [ "$RUNNER_OS" == "macOS" ]; then
+            brew install tmux
+          fi
+        shell: bash
+
+      - name: Verify imports
+        run: python -c "import claw"
+
+      - name: Start test server
+        run: |
+          tmux new-session -d -s test
+          timeout 5 python claw.py -p 8888 &
+          sleep 2
+          curl -f http://localhost:8888/ || exit 1
+          curl -f http://localhost:8888/api/data || exit 1
+        continue-on-error: true

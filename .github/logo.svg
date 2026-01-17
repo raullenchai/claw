@@ -1,0 +1,15 @@
+<svg width="200" height="200" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background circle -->
+  <circle cx="50" cy="50" r="48" fill="#0d1117"/>
+  <circle cx="50" cy="50" r="45" fill="none" stroke="#30363d" stroke-width="2"/>
+
+  <!-- Claw marks -->
+  <path d="M 25 20 Q 30 50 38 85" stroke="#a371f7" stroke-width="8" stroke-linecap="round" fill="none"/>
+  <path d="M 47 15 Q 50 50 50 90" stroke="#a371f7" stroke-width="8" stroke-linecap="round" fill="none"/>
+  <path d="M 69 20 Q 64 50 56 85" stroke="#a371f7" stroke-width="8" stroke-linecap="round" fill="none"/>
+
+  <!-- Shine effects -->
+  <path d="M 27 25 Q 30 45 36 65" stroke="#c9b1fa" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+  <path d="M 49 20 Q 50 45 50 70" stroke="#c9b1fa" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+  <path d="M 67 25 Q 63 45 58 65" stroke="#c9b1fa" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+</svg>
