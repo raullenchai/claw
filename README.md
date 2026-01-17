@@ -5,7 +5,9 @@
 <h1 align="center">Claw</h1>
 
 <p align="center">
-  <strong>CL</strong>aude <strong>A</strong>ny<strong>W</strong>here — Remote control for Claude Code from your phone
+  <strong>CL</strong>aude <strong>A</strong>ny<strong>W</strong>here — Control Claude Code from anywhere
+  <br>
+  <sub>📱 Phone · 💻 Laptop · 📟 Tablet · ⌚ Watch — if it has a browser, you're in control</sub>
 </p>
 
 <p align="center">
@@ -16,20 +18,19 @@
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/raullenchai/claw/main/.github/screenshot.png" width="300" alt="Claw Screenshot">
+  <img src="https://github.com/user-attachments/assets/814ec57a-e637-4a33-b2d6-f3bf0d5ac389" width="700" alt="Claw Screenshot">
 </p>
 
 ---
-<img width="969" height="953" alt="Screenshot 2026-01-17 at 12 05 57 PM" src="https://github.com/user-attachments/assets/814ec57a-e637-4a33-b2d6-f3bf0d5ac389" />
 
 ## Why Claw?
 
-Running a long Claude Code session? Need to step away from your desk? **Claw** lets you monitor and control Claude Code from your phone.
+Running a long Claude Code session? Need to step away from your desk? **Claw** lets you monitor and control Claude Code from any device with a browser.
 
-- See what Claude is doing in real-time
-- Send quick responses (yes/no/continue) with one tap
-- Interrupt with Ctrl+C when needed
-- Monitor multiple tmux sessions, windows, and panes
+- 👀 **See what Claude is doing** in real-time from any screen
+- ⚡ **Send quick responses** (yes/no/continue) with one tap
+- 🛑 **Interrupt with Ctrl+C** when things go sideways
+- 🖥️ **Monitor everything** — sessions, windows, panes, git status, system stats
 
 ## Quick Start
 
@@ -69,7 +70,7 @@ python3 claw.py
 
 ```bash
 git clone https://github.com/raullenchai/claw.git
-cd getclaw
+cd claw
 python3 claw.py
 ```
 
@@ -232,8 +233,8 @@ Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md)
 
 ```bash
 # Fork the repo, then:
-git clone https://github.com/YOUR_USERNAME/getclaw.git
-cd getclaw
+git clone https://github.com/YOUR_USERNAME/claw.git
+cd claw
 python3 claw.py  # Test your changes
 ```
 
@@ -248,5 +249,5 @@ Built for use with [Claude Code](https://claude.ai/claude-code) by Anthropic.
 ---
 
 <p align="center">
-  <sub>Made with 🦞 for the Claude Code community</sub>
+  <sub>Made with 🦞 by developers who got tired of walking back to their desks</sub>
 </p>
