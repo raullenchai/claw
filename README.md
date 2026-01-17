@@ -35,14 +35,12 @@ Running a long Claude Code session? Need to step away from your desk? **Claw** l
 ## Quick Start
 
 ```bash
-# Run Claw
-python3 claw.py
-
-# Access from your phone
-# http://<your-computer-ip>:8080
+python3 claw.py --share
 ```
 
-That's it. No dependencies beyond Python 3 standard library.
+Open the URL on your phone. That's it.
+
+> No dependencies beyond Python 3 standard library.
 
 ## Features
 
@@ -88,7 +86,7 @@ claw
 ## Usage
 
 ```
-usage: claw.py [-h] [-p PORT] [-b BIND] [-r REFRESH] [-d DIR]
+usage: claw.py [-h] [-p PORT] [-b BIND] [-r REFRESH] [-d DIR] [-s]
 
 Claw - Remote control for Claude Code sessions
 
@@ -99,6 +97,7 @@ options:
   -r REFRESH, --refresh REFRESH
                         Refresh interval in seconds (default: 5)
   -d DIR, --dir DIR     Add a work directory to monitor
+  -s, --share           Share via public URL (uses Cloudflare Tunnel)
 ```
 
 ### Examples
@@ -107,7 +106,10 @@ options:
 # Default (localhost only, port 8080, 5s refresh)
 claw
 
-# Allow network access (for phone/tablet)
+# 🌐 Access from ANYWHERE (phone while away from home!)
+claw --share
+
+# Allow local network access (for phone/tablet on same WiFi)
 claw -b 0.0.0.0
 
 # Custom port with network access
@@ -119,6 +121,117 @@ claw -r 2
 # Monitor specific directory
 claw -d ~/projects/myapp
 ```
+
+## Accessing Claw from Your Phone
+
+Choose the method that fits your situation:
+
+### Method 1: Same WiFi Network (Simplest)
+
+If your phone and computer are on the same WiFi:
+
+```bash
+claw -b 0.0.0.0
+```
+
+Then open `http://<your-computer-ip>:8080` on your phone.
+
+**Find your computer's IP:**
+```bash
+# macOS
+ipconfig getifaddr en0
+
+# Linux
+hostname -I | awk '{print $1}'
+```
+
+Example: `http://192.168.1.42:8080` or `http://10.0.0.15:8080`
+
+---
+
+### Method 2: Access from Anywhere (No Account Needed)
+
+Perfect for checking Claude from a coffee shop, car, or anywhere outside your home:
+
+```bash
+claw --share
+```
+
+```
+    ╱╱╱   Claw - CLaude AnyWhere
+
+  ✓  Tunnel ready!
+  →  Public: https://random-words.trycloudflare.com  ← Use this!
+```
+
+- ✅ Works through any firewall/NAT
+- ✅ No signup required
+- ✅ Completely free
+- ⚠️ URL changes each time you restart Claw
+
+**First run downloads `cloudflared` (~25MB) automatically.**
+
+---
+
+### Method 3: Permanent URL (Cloudflare Account)
+
+Want the same URL every time? Set up a free Cloudflare account:
+
+**One-time setup:**
+
+```bash
+# 1. Install cloudflared (if not auto-installed)
+brew install cloudflared   # macOS
+# or download from https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
+
+# 2. Login to Cloudflare (opens browser)
+cloudflared tunnel login
+
+# 3. Create your tunnel
+cloudflared tunnel create claw
+
+# 4. Connect your domain (you need a domain on Cloudflare)
+cloudflared tunnel route dns claw claw.yourdomain.com
+```
+
+**Daily use:**
+
+```bash
+# Start Claw
+claw &
+
+# Start tunnel (in another terminal or add to your startup)
+cloudflared tunnel run --url http://localhost:8080 claw
+```
+
+Now `https://claw.yourdomain.com` always works!
+
+**Requirements:**
+- Free Cloudflare account ([sign up](https://dash.cloudflare.com/sign-up))
+- A domain name (~$10/year, or use one you already have)
+
+---
+
+### Method 4: Tailscale (Best for Teams)
+
+If you use [Tailscale](https://tailscale.com), just run:
+
+```bash
+claw -b 0.0.0.0
+```
+
+Access via your Tailscale IP: `http://100.x.x.x:8080`
+
+---
+
+### Quick Comparison
+
+| Method | Setup | URL | Best For |
+|--------|-------|-----|----------|
+| Same WiFi | None | `192.168.x.x:8080` | Home use |
+| `--share` | None | Random URL | Quick remote access |
+| Cloudflare | 5 min | `claw.yourdomain.com` | Daily remote use |
+| Tailscale | Install app | `100.x.x.x:8080` | Teams/multiple devices |
 
 ## API Reference
 
@@ -138,41 +251,25 @@ claw -d ~/projects/myapp
 | `/api/send` | `{"session": "name", "window": "1", "pane": "0", "text": "yes", "enter": true}` | Send text to pane |
 | `/api/control` | `{"session": "name", "window": "1", "pane": "0", "key": "C-c"}` | Send control key |
 
-## Network Access
-
-By default, Claw binds to `127.0.0.1` (localhost only) for security. To access from other devices:
-
-```bash
-# Enable network access
-claw -b 0.0.0.0
-```
-
-**Finding your IP:**
-
-```bash
-# macOS
-ipconfig getifaddr en0
-
-# Linux
-hostname -I | awk '{print $1}'
-```
-
-**Tailscale users:** Access via your Tailscale IP (e.g., `http://100.x.x.x:8080/`)
-
 ## Security
 
-> ⚠️ **Warning:** Claw has no authentication. Only use on trusted networks.
+> ⚠️ **Warning:** Claw has no built-in authentication. Be mindful of who can access it.
 
-- By default, binds to localhost only (`127.0.0.1`) — use `-b 0.0.0.0` for network access
-- CORS is restricted to localhost and private network IPs only
-- Input validation prevents command injection attacks
-- Control keys are whitelisted (only safe keys like Ctrl+C allowed)
-- Consider firewall rules if exposing beyond local network
-- For remote access, use Tailscale or SSH tunneling
+**Safe by default:**
+- Binds to `localhost` only — your computer only
+- `--share` uses HTTPS (encrypted via Cloudflare)
+- Input validation prevents command injection
+- Control keys are whitelisted
 
+**When using `-b 0.0.0.0` (local network access):**
+- Anyone on your WiFi can access Claw
+- Fine for home networks, be careful on public WiFi
+
+**For extra security:**
 ```bash
-# SSH tunnel example
+# SSH tunnel (if you have a server)
 ssh -L 8080:localhost:8080 your-server
+# Then access http://localhost:8080 on your phone via SSH app
 ```
 
 ## Requirements

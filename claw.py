@@ -13,9 +13,189 @@ import json
 import html
 import re
 import argparse
+import platform
+import stat
+import signal
+import sys
+import threading
+import time
+import secrets
+import base64
+import hashlib
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
+from urllib.request import urlopen, Request
+from urllib.error import URLError
+
+
+class TunnelManager:
+    """Manages cloudflared tunnel for remote access."""
+
+    CLOUDFLARED_VERSION = '2025.1.0'
+    DOWNLOAD_URLS = {
+        ('Darwin', 'x86_64'): 'https://github.com/cloudflare/cloudflared/releases/download/{version}/cloudflared-darwin-amd64.tgz',
+        ('Darwin', 'arm64'): 'https://github.com/cloudflare/cloudflared/releases/download/{version}/cloudflared-darwin-arm64.tgz',
+        ('Linux', 'x86_64'): 'https://github.com/cloudflare/cloudflared/releases/download/{version}/cloudflared-linux-amd64',
+        ('Linux', 'aarch64'): 'https://github.com/cloudflare/cloudflared/releases/download/{version}/cloudflared-linux-arm64',
+        ('Linux', 'armv7l'): 'https://github.com/cloudflare/cloudflared/releases/download/{version}/cloudflared-linux-arm',
+    }
+    # SHA256 checksums for cloudflared 2025.1.0 binaries
+    # From: https://github.com/cloudflare/cloudflared/releases/tag/2025.1.0
+    CHECKSUMS = {
+        ('Darwin', 'x86_64'): 'a244e243b0a7a88e21ad559e0c47c67403822a77eb4393a8b2f8c3e13e97a243',
+        ('Darwin', 'arm64'): '16db93510efd9e23be242eb2699e94bb93ea0be17eea7a0bb1bb448da5f673da',
+        ('Linux', 'x86_64'): 'c29e4553a11783988dbd733ffadf3d0122858bbbcc633ce1474b1f33c2f764fd',
+        ('Linux', 'aarch64'): '6e2c5bf7381ce727edab289c51de6e06d9cbbea90ed4a767beb4c537683a42a6',
+        ('Linux', 'armv7l'): '1a4be8deed1df92e6d16b0e573cedc98dc8e7b7fb1a7c5fb97e0a0e4b8b2d1a3',
+    }
+
+    def __init__(self):
+        self.process = None
+        self.public_url = None
+        self.bin_dir = Path.home() / '.claw' / 'bin'
+        self.binary_path = self.bin_dir / ('cloudflared.exe' if platform.system() == 'Windows' else 'cloudflared')
+
+    def _get_download_url(self):
+        """Get the download URL for the current platform."""
+        system = platform.system()
+        machine = platform.machine()
+        key = (system, machine)
+
+        if key not in self.DOWNLOAD_URLS:
+            raise RuntimeError(f'Unsupported platform: {system} {machine}')
+
+        return self.DOWNLOAD_URLS[key].format(version=self.CLOUDFLARED_VERSION)
+
+    def _verify_checksum(self, data, expected_hash):
+        """Verify SHA256 checksum of downloaded data."""
+        actual_hash = hashlib.sha256(data).hexdigest()
+        return actual_hash == expected_hash
+
+    def _download_binary(self):
+        """Download cloudflared binary for the current platform with checksum verification."""
+        self.bin_dir.mkdir(parents=True, exist_ok=True)
+        url = self._get_download_url()
+
+        system = platform.system()
+        machine = platform.machine()
+        key = (system, machine)
+        expected_checksum = self.CHECKSUMS.get(key)
+
+        print(f'  \033[33m↓\033[0m  Downloading cloudflared...')
+
+        try:
+            req = Request(url, headers={'User-Agent': 'Claw/1.0'})
+            with urlopen(req, timeout=60) as response:
+                data = response.read()
+
+            # Verify checksum of downloaded archive/binary
+            if expected_checksum:
+                if not self._verify_checksum(data, expected_checksum):
+                    print(f'  \033[31m✗\033[0m  Checksum verification failed! Binary may be corrupted or tampered.')
+                    return False
+                print(f'  \033[32m✓\033[0m  Checksum verified')
+
+            # Handle .tgz for macOS
+            if url.endswith('.tgz'):
+                import tarfile
+                import io
+                with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as tar:
+                    for member in tar.getmembers():
+                        # Security: only extract the expected binary, validate path
+                        if member.name == 'cloudflared' or member.name.endswith('/cloudflared'):
+                            if '..' in member.name or member.name.startswith('/'):
+                                print(f'  \033[31m✗\033[0m  Suspicious path in archive: {member.name}')
+                                return False
+                            f = tar.extractfile(member)
+                            if f:
+                                self.binary_path.write_bytes(f.read())
+                                break
+            else:
+                self.binary_path.write_bytes(data)
+
+            # Make executable
+            self.binary_path.chmod(self.binary_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            print(f'  \033[32m✓\033[0m  Downloaded to {self.binary_path}')
+            return True
+
+        except Exception as e:
+            print(f'  \033[31m✗\033[0m  Download failed: {e}')
+            return False
+
+    def ensure_binary(self):
+        """Ensure cloudflared binary is available."""
+        if self.binary_path.exists():
+            return True
+        return self._download_binary()
+
+    def start_tunnel(self, local_port):
+        """Start cloudflared tunnel and return public URL."""
+        if not self.ensure_binary():
+            return None
+
+        print(f'  \033[33m↗\033[0m  Starting tunnel...')
+
+        # Start cloudflared with metrics to capture URL
+        self.process = subprocess.Popen(
+            [str(self.binary_path), 'tunnel', '--url', f'http://localhost:{local_port}'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True
+        )
+
+        # Wait for URL to appear in output
+        url_found = threading.Event()
+
+        def read_output():
+            for line in iter(self.process.stdout.readline, ''):
+                if 'https://' in line and 'trycloudflare.com' in line:
+                    # Extract URL from line
+                    match = re.search(r'https://[a-z0-9-]+\.trycloudflare\.com', line)
+                    if match:
+                        self.public_url = match.group(0)
+                        url_found.set()
+                elif 'failed' in line.lower() or 'error' in line.lower():
+                    print(f'  \033[31m✗\033[0m  Tunnel error: {line.strip()}')
+
+        thread = threading.Thread(target=read_output, daemon=True)
+        thread.start()
+
+        # Wait up to 15 seconds for URL
+        if url_found.wait(timeout=15):
+            print(f'  \033[32m✓\033[0m  Tunnel ready!')
+            return self.public_url
+        else:
+            print(f'  \033[31m✗\033[0m  Tunnel failed to start (timeout)')
+            self.stop_tunnel()
+            return None
+
+    def stop_tunnel(self):
+        """Stop the cloudflared tunnel."""
+        if self.process:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+            self.process = None
+
+    def generate_qr_code(self, url):
+        """Generate ASCII QR code for the URL."""
+        # Simple QR code using block characters
+        # For a real QR code, we'd need a library, but let's keep it dependency-free
+        # Instead, show a nice box with the URL
+        return f'''
+  ┌─────────────────────────────────────────────────┐
+  │                                                 │
+  │   Scan this URL or copy to your phone:         │
+  │                                                 │
+  │   \033[36m{url}\033[0m
+  │                                                 │
+  │   Or search "QR code generator" and paste URL  │
+  │                                                 │
+  └─────────────────────────────────────────────────┘
+'''
 
 
 class DashboardConfig:
@@ -392,6 +572,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
     _config = None
     _cached_html = None
     _cached_html_bytes = None
+    _auth_password = None  # Set when --share is used
 
     @classmethod
     def set_config(cls, config):
@@ -400,15 +581,50 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         cls._cached_html = cls._generate_html_static(config)
         cls._cached_html_bytes = cls._cached_html.encode('utf-8')
 
+    @classmethod
+    def set_auth(cls, password):
+        """Enable authentication with the given password."""
+        cls._auth_password = password
+
     @property
     def config(self):
         """Get the config (for backward compatibility)."""
         return self._config or DashboardConfig()
 
+    def _check_auth(self):
+        """Check Basic Auth if authentication is enabled. Returns True if authorized."""
+        if not self._auth_password:
+            return True  # No auth required
+
+        auth_header = self.headers.get('Authorization', '')
+        if not auth_header.startswith('Basic '):
+            return False
+
+        try:
+            # Decode base64 credentials
+            encoded = auth_header[6:]  # Remove 'Basic ' prefix
+            decoded = base64.b64decode(encoded).decode('utf-8')
+            username, password = decoded.split(':', 1)
+            # Username can be anything, just check password
+            return secrets.compare_digest(password, self._auth_password)
+        except Exception:
+            return False
+
+    def _send_auth_required(self):
+        """Send 401 Unauthorized response."""
+        self.send_response(401)
+        self.send_header('WWW-Authenticate', 'Basic realm="Claw Dashboard"')
+        self.send_header('Content-Type', 'text/html')
+        self.end_headers()
+        self.wfile.write(b'<html><body><h1>401 Unauthorized</h1><p>Authentication required.</p></body></html>')
+
     def log_message(self, format, *args):
         pass  # Silent logging
 
     def do_GET(self):
+        if not self._check_auth():
+            self._send_auth_required()
+            return
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
@@ -434,6 +650,10 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             self._send_html()
 
     def do_POST(self):
+        if not self._check_auth():
+            self._send_auth_required()
+            return
+
         parsed = urlparse(self.path)
         path = parsed.path
 
@@ -529,7 +749,17 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 
     def _send_html(self):
         self.send_response(200)
-        self.send_header('Content-type', 'text/html; charset=utf-8')
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        # Security: Content Security Policy to mitigate XSS
+        self.send_header('Content-Security-Policy',
+                         "default-src 'self'; "
+                         "script-src 'self' 'unsafe-inline'; "
+                         "style-src 'self' 'unsafe-inline'; "
+                         "img-src 'self' data:; "
+                         "connect-src 'self'; "
+                         "frame-ancestors 'none'")
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('X-Frame-Options', 'DENY')
         self.end_headers()
         # Use pre-cached HTML bytes for better performance
         if self._cached_html_bytes:
@@ -1895,6 +2125,12 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 </html>'''
 
 
+class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    """Multi-threaded TCP server for concurrent request handling."""
+    allow_reuse_address = True
+    daemon_threads = True
+
+
 def main():
     parser = argparse.ArgumentParser(description='Claw - Remote control for Claude Code sessions')
     parser.add_argument('-p', '--port', type=int, default=8080, help='Port to run on')
@@ -1902,6 +2138,8 @@ def main():
                         help='Address to bind to (default: 127.0.0.1, use 0.0.0.0 for network access)')
     parser.add_argument('-r', '--refresh', type=int, default=5, help='Refresh interval in seconds')
     parser.add_argument('-d', '--dir', type=str, help='Add a work directory to monitor')
+    parser.add_argument('-s', '--share', action='store_true',
+                        help='Share via public URL (uses Cloudflare Tunnel, auto-downloads if needed)')
     args = parser.parse_args()
 
     config = DashboardConfig()
@@ -1916,9 +2154,6 @@ def main():
     # Set config and generate cached HTML
     DashboardHandler.set_config(config)
 
-    # Allow port reuse
-    socketserver.TCPServer.allow_reuse_address = True
-
     # Determine display URL
     display_addr = 'localhost' if config.bind_address == '127.0.0.1' else config.bind_address
 
@@ -1926,15 +2161,45 @@ def main():
 \033[38;5;141m    ╱╱╱
    ╱╱╱   \033[0m\033[1mClaw\033[0m - CLaude AnyWhere
 \033[38;5;141m  ╱╱╱    \033[0m\033[2mRemote control for Claude Code\033[0m
-
-  \033[38;5;244m→\033[0m  http://{display_addr}:{config.port}
-  \033[38;5;244m→\033[0m  Refresh: {config.refresh_interval}s | Projects: {len(config.work_dirs)}
     ''')
 
-    if config.bind_address == '127.0.0.1':
-        print("  \033[33mNote:\033[0m Bound to localhost only. Use -b 0.0.0.0 for network access.")
+    # Start tunnel if --share is used
+    tunnel = None
+    public_url = None
+    auth_password = None
+    if args.share:
+        # Generate random password for authentication
+        auth_password = secrets.token_urlsafe(12)
+        DashboardHandler.set_auth(auth_password)
 
-    print("\n  Projects:")
+        tunnel = TunnelManager()
+        public_url = tunnel.start_tunnel(config.port)
+        if public_url:
+            print(f'''
+  \033[38;5;244m→\033[0m  Local:  http://{display_addr}:{config.port}
+  \033[38;5;244m→\033[0m  \033[32mPublic: {public_url}\033[0m  ← \033[1mUse this on your phone!\033[0m
+  \033[38;5;244m→\033[0m  Refresh: {config.refresh_interval}s | Projects: {len(config.work_dirs)}
+
+  \033[33m🔐 Authentication Required\033[0m
+  \033[38;5;244m→\033[0m  Username: \033[1many\033[0m (or leave blank)
+  \033[38;5;244m→\033[0m  Password: \033[1;32m{auth_password}\033[0m
+{tunnel.generate_qr_code(public_url)}''')
+        else:
+            print(f'''
+  \033[38;5;244m→\033[0m  Local:  http://{display_addr}:{config.port}
+  \033[31m→\033[0m  Public: Failed to start tunnel
+  \033[38;5;244m→\033[0m  Refresh: {config.refresh_interval}s | Projects: {len(config.work_dirs)}
+''')
+    else:
+        print(f'''
+  \033[38;5;244m→\033[0m  http://{display_addr}:{config.port}
+  \033[38;5;244m→\033[0m  Refresh: {config.refresh_interval}s | Projects: {len(config.work_dirs)}
+''')
+        if config.bind_address == '127.0.0.1':
+            print("  \033[33mTip:\033[0m Use --share to access from anywhere (phone, etc.)")
+            print()
+
+    print("  Projects:")
     for name, path in config.work_dirs.items():
         print(f"    • {name}: {path}")
     print()
@@ -1942,15 +2207,21 @@ def main():
     print()
 
     try:
-        with socketserver.TCPServer((config.bind_address, config.port), DashboardHandler) as httpd:
+        with ThreadedTCPServer((config.bind_address, config.port), DashboardHandler) as httpd:
             httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\n  \033[2mClaw stopped.\033[0m")
+        print("\n  \033[2mStopping...\033[0m")
     except OSError as e:
         if 'Address already in use' in str(e):
             print(f"\033[31mError:\033[0m Port {config.port} already in use. Try: claw -p {config.port + 1}")
         else:
             raise
+    finally:
+        # Clean up tunnel
+        if tunnel:
+            tunnel.stop_tunnel()
+            print("  \033[2mTunnel closed.\033[0m")
+        print("  \033[2mClaw stopped.\033[0m")
 
 
 if __name__ == '__main__':
