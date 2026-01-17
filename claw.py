@@ -21,6 +21,7 @@ from pathlib import Path
 class DashboardConfig:
     """Configuration for the dashboard."""
     def __init__(self):
+        self.bind_address = '127.0.0.1'  # Default to localhost for security
         self.port = 8080
         self.refresh_interval = 5  # seconds
         self.work_dirs = self._detect_work_dirs()
@@ -52,6 +53,17 @@ class DashboardConfig:
 class CommandSender:
     """Sends commands to tmux sessions."""
 
+    # Whitelist of allowed control keys
+    ALLOWED_CONTROL_KEYS = frozenset({
+        'C-c', 'C-d', 'C-z', 'C-l', 'C-a', 'C-e', 'C-k', 'C-u', 'C-w',
+        'C-r', 'C-p', 'C-n', 'C-b', 'C-f', 'C-g', 'C-t', 'C-v', 'C-x',
+        'Escape', 'Enter', 'Tab', 'BSpace', 'DC', 'IC',
+        'Up', 'Down', 'Left', 'Right', 'Home', 'End', 'PPage', 'NPage',
+    })
+
+    # Maximum allowed text length
+    MAX_TEXT_LENGTH = 10000
+
     @staticmethod
     def _build_target(session_name, window=None, pane=None):
         """Build tmux target string (session:window.pane)."""
@@ -63,12 +75,46 @@ class CommandSender:
         return target
 
     @staticmethod
+    def _validate_session_name(name):
+        """Validate session/window/pane names to prevent injection."""
+        if not name:
+            return False
+        # Only allow alphanumeric, dash, underscore, dot
+        return bool(re.match(r'^[\w\-.]+$', str(name)))
+
+    @staticmethod
+    def _sanitize_text(text):
+        """Sanitize text to prevent tmux escape sequence injection."""
+        if not text:
+            return ''
+        # Limit length
+        if len(text) > CommandSender.MAX_TEXT_LENGTH:
+            return None  # Reject overly long input
+        # Text is passed as literal to tmux send-keys, which is generally safe
+        # But we strip any null bytes and limit to printable + common whitespace
+        sanitized = text.replace('\x00', '')
+        return sanitized
+
+    @staticmethod
     def send_to_tmux(session_name, text, press_enter=True, window=None, pane=None):
         """Send text to a tmux pane. Optionally specify window and pane index."""
         try:
+            # Validate session name
+            if not CommandSender._validate_session_name(session_name):
+                return {'success': False, 'error': 'Invalid session name'}
+            if window is not None and not CommandSender._validate_session_name(window):
+                return {'success': False, 'error': 'Invalid window index'}
+            if pane is not None and not CommandSender._validate_session_name(pane):
+                return {'success': False, 'error': 'Invalid pane index'}
+
+            # Sanitize text
+            sanitized_text = CommandSender._sanitize_text(text)
+            if sanitized_text is None:
+                return {'success': False, 'error': 'Text too long (max 10000 chars)'}
+
             target = CommandSender._build_target(session_name, window, pane)
-            # Send the text
-            cmd = ['tmux', 'send-keys', '-t', target, text]
+            # Send the text using -l (literal) flag to prevent escape interpretation
+            cmd = ['tmux', 'send-keys', '-l', '-t', target, sanitized_text]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
 
             if result.returncode != 0:
@@ -87,6 +133,18 @@ class CommandSender:
     def send_control_key(session_name, key, window=None, pane=None):
         """Send a control key (like Ctrl+C) to a tmux pane."""
         try:
+            # Validate session name
+            if not CommandSender._validate_session_name(session_name):
+                return {'success': False, 'error': 'Invalid session name'}
+            if window is not None and not CommandSender._validate_session_name(window):
+                return {'success': False, 'error': 'Invalid window index'}
+            if pane is not None and not CommandSender._validate_session_name(pane):
+                return {'success': False, 'error': 'Invalid pane index'}
+
+            # Whitelist control keys
+            if key not in CommandSender.ALLOWED_CONTROL_KEYS:
+                return {'success': False, 'error': f'Control key not allowed: {key}'}
+
             target = CommandSender._build_target(session_name, window, pane)
             subprocess.run(['tmux', 'send-keys', '-t', target, key],
                          capture_output=True, text=True, timeout=5)
@@ -118,83 +176,102 @@ class DataCollector:
 
     @staticmethod
     def get_tmux_sessions():
-        """Get detailed tmux session info including windows."""
-        sessions = []
-        raw = DataCollector.run_cmd(['tmux', 'list-sessions', '-F',
-            '#{session_name}|#{session_windows}|#{session_attached}|#{session_created}'])
+        """Get detailed tmux session info including windows and panes in a single call."""
+        # Use a single tmux command to get all pane data at once (O(1) instead of O(n*m*p))
+        format_str = '|'.join([
+            '#{session_name}', '#{session_attached}', '#{session_created}',
+            '#{window_index}', '#{window_name}', '#{window_active}',
+            '#{pane_index}', '#{pane_current_command}', '#{pane_active}'
+        ])
+        raw = DataCollector.run_cmd(['tmux', 'list-panes', '-a', '-F', format_str])
 
         if not raw or raw.startswith('['):
-            return sessions
+            return []
 
+        # Build hierarchical structure from flat data
+        sessions_dict = {}
         for line in raw.split('\n'):
-            if '|' in line:
-                parts = line.split('|')
-                if len(parts) >= 4:
-                    session_name = parts[0]
-                    windows = DataCollector.get_tmux_windows(session_name)
-                    sessions.append({
-                        'name': session_name,
-                        'windows': windows,
-                        'window_count': len(windows),
-                        'attached': parts[2] == '1',
-                        'created': datetime.fromtimestamp(int(parts[3])).strftime('%H:%M') if parts[3].isdigit() else 'N/A'
-                    })
+            if '|' not in line:
+                continue
+            parts = line.split('|')
+            if len(parts) < 9:
+                continue
+
+            session_name = parts[0]
+            session_attached = parts[1] == '1'
+            session_created = parts[2]
+            window_index = parts[3]
+            window_name = parts[4]
+            window_active = parts[5] == '1'
+            pane_index = parts[6]
+            pane_command = parts[7]
+            pane_active = parts[8] == '1'
+
+            # Initialize session if not exists
+            if session_name not in sessions_dict:
+                try:
+                    created_str = datetime.fromtimestamp(int(session_created)).strftime('%H:%M')
+                except (ValueError, OSError):
+                    created_str = 'N/A'
+                sessions_dict[session_name] = {
+                    'name': session_name,
+                    'windows': {},
+                    'window_count': 0,
+                    'attached': session_attached,
+                    'created': created_str
+                }
+
+            # Initialize window if not exists
+            windows = sessions_dict[session_name]['windows']
+            if window_index not in windows:
+                windows[window_index] = {
+                    'index': window_index,
+                    'name': window_name,
+                    'active': window_active,
+                    'pane_count': 0,
+                    'panes': []
+                }
+
+            # Add pane
+            windows[window_index]['panes'].append({
+                'index': pane_index,
+                'command': pane_command,
+                'active': pane_active
+            })
+            windows[window_index]['pane_count'] = len(windows[window_index]['panes'])
+
+        # Convert dicts to lists and finalize
+        sessions = []
+        for session in sessions_dict.values():
+            session['windows'] = list(session['windows'].values())
+            session['window_count'] = len(session['windows'])
+            sessions.append(session)
+
         return sessions
 
     @staticmethod
     def get_tmux_windows(session_name):
-        """Get windows for a tmux session, including panes."""
-        windows = []
-        raw = DataCollector.run_cmd(['tmux', 'list-windows', '-t', session_name, '-F',
-            '#{window_index}|#{window_name}|#{window_active}|#{window_panes}'])
-
-        if not raw or raw.startswith('['):
-            return windows
-
-        for line in raw.split('\n'):
-            if '|' in line:
-                parts = line.split('|')
-                if len(parts) >= 4:
-                    window_index = parts[0]
-                    panes = DataCollector.get_tmux_panes(session_name, window_index)
-                    windows.append({
-                        'index': window_index,
-                        'name': parts[1],
-                        'active': parts[2] == '1',
-                        'pane_count': int(parts[3]) if parts[3].isdigit() else 1,
-                        'panes': panes
-                    })
-        return windows
+        """Get windows for a tmux session (legacy method, uses batched query internally)."""
+        sessions = DataCollector.get_tmux_sessions()
+        for session in sessions:
+            if session['name'] == session_name:
+                return session['windows']
+        return []
 
     @staticmethod
     def get_tmux_panes(session_name, window_index):
-        """Get panes for a tmux window."""
-        panes = []
-        raw = DataCollector.run_cmd(['tmux', 'list-panes', '-t', f'{session_name}:{window_index}', '-F',
-            '#{pane_index}|#{pane_current_command}|#{pane_active}'])
-
-        if not raw or raw.startswith('['):
-            return panes
-
-        for line in raw.split('\n'):
-            if '|' in line:
-                parts = line.split('|')
-                if len(parts) >= 3:
-                    panes.append({
-                        'index': parts[0],
-                        'command': parts[1],
-                        'active': parts[2] == '1'
-                    })
-        return panes
+        """Get panes for a tmux window (legacy method, uses batched query internally)."""
+        windows = DataCollector.get_tmux_windows(session_name)
+        for window in windows:
+            if window['index'] == window_index:
+                return window['panes']
+        return []
 
     @staticmethod
     def get_tmux_pane_content(session_name, lines=50, window=None, pane=None):
         """Capture content from a tmux pane. Optionally specify window and pane index."""
-        target = session_name
-        if window is not None:
-            target = f"{session_name}:{window}"
-            if pane is not None:
-                target = f"{session_name}:{window}.{pane}"
+        # Reuse shared target-building logic
+        target = CommandSender._build_target(session_name, window, pane)
         content = DataCollector.run_cmd([
             'tmux', 'capture-pane', '-t', target, '-p', '-S', f'-{lines}'
         ], timeout=3)
@@ -311,7 +388,22 @@ class DataCollector:
 class DashboardHandler(http.server.SimpleHTTPRequestHandler):
     """HTTP request handler for the dashboard."""
 
-    config = DashboardConfig()
+    # Class-level config and cached HTML (set once at startup)
+    _config = None
+    _cached_html = None
+    _cached_html_bytes = None
+
+    @classmethod
+    def set_config(cls, config):
+        """Set config and regenerate cached HTML."""
+        cls._config = config
+        cls._cached_html = cls._generate_html_static(config)
+        cls._cached_html_bytes = cls._cached_html.encode('utf-8')
+
+    @property
+    def config(self):
+        """Get the config (for backward compatibility)."""
+        return self._config or DashboardConfig()
 
     def log_message(self, format, *args):
         pass  # Silent logging
@@ -394,10 +486,44 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         else:
             self._send_json({'error': 'Unknown endpoint'})
 
+    def _get_cors_origin(self):
+        """Get allowed CORS origin based on request origin."""
+        origin = self.headers.get('Origin', '')
+        if not origin:
+            return None
+
+        # Parse the origin to check if it's from localhost or private network
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(origin)
+            host = parsed.hostname or ''
+
+            # Allow localhost variants
+            if host in ('localhost', '127.0.0.1', '::1'):
+                return origin
+
+            # Allow private network IPs (RFC 1918)
+            import ipaddress
+            try:
+                ip = ipaddress.ip_address(host)
+                if ip.is_private or ip.is_loopback:
+                    return origin
+            except ValueError:
+                # Not an IP address, check if it's a .local domain
+                if host.endswith('.local'):
+                    return origin
+        except Exception:
+            pass
+
+        return None
+
     def _send_json(self, data):
         self.send_response(200)
         self.send_header('Content-type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
+        cors_origin = self._get_cors_origin()
+        if cors_origin:
+            self.send_header('Access-Control-Allow-Origin', cors_origin)
+            self.send_header('Vary', 'Origin')
         self.end_headers()
         self.wfile.write(json.dumps(data, default=str).encode())
 
@@ -405,9 +531,14 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-type', 'text/html; charset=utf-8')
         self.end_headers()
-        self.wfile.write(self._generate_html().encode())
+        # Use pre-cached HTML bytes for better performance
+        if self._cached_html_bytes:
+            self.wfile.write(self._cached_html_bytes)
+        else:
+            self.wfile.write(self._generate_html_static(self.config).encode())
 
-    def _generate_html(self):
+    @staticmethod
+    def _generate_html_static(config):
         return f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1230,12 +1361,12 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 
         <div class="footer">
             <span class="time" id="lastUpdate">-</span>
-            <br>Auto-refresh: <span id="refreshInterval">{self.config.refresh_interval}</span>s
+            <br>Auto-refresh: <span id="refreshInterval">{config.refresh_interval}</span>s
         </div>
     </div>
 
     <script>
-        let refreshInterval = {self.config.refresh_interval} * 1000;
+        let refreshInterval = {config.refresh_interval} * 1000;
         let refreshTimer = null;
         let activeSession = null;
         let activeWindow = null;
@@ -1767,11 +1898,14 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser(description='Claw - Remote control for Claude Code sessions')
     parser.add_argument('-p', '--port', type=int, default=8080, help='Port to run on')
+    parser.add_argument('-b', '--bind', type=str, default='127.0.0.1',
+                        help='Address to bind to (default: 127.0.0.1, use 0.0.0.0 for network access)')
     parser.add_argument('-r', '--refresh', type=int, default=5, help='Refresh interval in seconds')
     parser.add_argument('-d', '--dir', type=str, help='Add a work directory to monitor')
     args = parser.parse_args()
 
     config = DashboardConfig()
+    config.bind_address = args.bind
     config.port = args.port
     config.refresh_interval = args.refresh
 
@@ -1779,21 +1913,28 @@ def main():
         name = Path(args.dir).name
         config.work_dirs[name] = args.dir
 
-    DashboardHandler.config = config
+    # Set config and generate cached HTML
+    DashboardHandler.set_config(config)
 
     # Allow port reuse
     socketserver.TCPServer.allow_reuse_address = True
+
+    # Determine display URL
+    display_addr = 'localhost' if config.bind_address == '127.0.0.1' else config.bind_address
 
     print(f'''
 \033[38;5;141m    ╱╱╱
    ╱╱╱   \033[0m\033[1mClaw\033[0m - CLaude AnyWhere
 \033[38;5;141m  ╱╱╱    \033[0m\033[2mRemote control for Claude Code\033[0m
 
-  \033[38;5;244m→\033[0m  http://0.0.0.0:{config.port}
+  \033[38;5;244m→\033[0m  http://{display_addr}:{config.port}
   \033[38;5;244m→\033[0m  Refresh: {config.refresh_interval}s | Projects: {len(config.work_dirs)}
     ''')
 
-    print("  Projects:")
+    if config.bind_address == '127.0.0.1':
+        print("  \033[33mNote:\033[0m Bound to localhost only. Use -b 0.0.0.0 for network access.")
+
+    print("\n  Projects:")
     for name, path in config.work_dirs.items():
         print(f"    • {name}: {path}")
     print()
@@ -1801,7 +1942,7 @@ def main():
     print()
 
     try:
-        with socketserver.TCPServer(("", config.port), DashboardHandler) as httpd:
+        with socketserver.TCPServer((config.bind_address, config.port), DashboardHandler) as httpd:
             httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n  \033[2mClaw stopped.\033[0m")

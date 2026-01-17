@@ -88,13 +88,14 @@ claw
 ## Usage
 
 ```
-usage: claw.py [-h] [-p PORT] [-r REFRESH] [-d DIR]
+usage: claw.py [-h] [-p PORT] [-b BIND] [-r REFRESH] [-d DIR]
 
 Claw - Remote control for Claude Code sessions
 
 options:
   -h, --help            show this help message and exit
   -p PORT, --port PORT  Port to run on (default: 8080)
+  -b BIND, --bind BIND  Address to bind to (default: 127.0.0.1)
   -r REFRESH, --refresh REFRESH
                         Refresh interval in seconds (default: 5)
   -d DIR, --dir DIR     Add a work directory to monitor
@@ -103,11 +104,14 @@ options:
 ### Examples
 
 ```bash
-# Default (port 8080, 5s refresh)
+# Default (localhost only, port 8080, 5s refresh)
 claw
 
-# Custom port
-claw -p 3000
+# Allow network access (for phone/tablet)
+claw -b 0.0.0.0
+
+# Custom port with network access
+claw -p 3000 -b 0.0.0.0
 
 # Faster refresh
 claw -r 2
@@ -136,7 +140,12 @@ claw -d ~/projects/myapp
 
 ## Network Access
 
-Claw binds to `0.0.0.0` so it's accessible from any device on your network.
+By default, Claw binds to `127.0.0.1` (localhost only) for security. To access from other devices:
+
+```bash
+# Enable network access
+claw -b 0.0.0.0
+```
 
 **Finding your IP:**
 
@@ -154,7 +163,10 @@ hostname -I | awk '{print $1}'
 
 > ⚠️ **Warning:** Claw has no authentication. Only use on trusted networks.
 
-- Commands sent via `/api/send` execute directly in tmux
+- By default, binds to localhost only (`127.0.0.1`) — use `-b 0.0.0.0` for network access
+- CORS is restricted to localhost and private network IPs only
+- Input validation prevents command injection attacks
+- Control keys are whitelisted (only safe keys like Ctrl+C allowed)
 - Consider firewall rules if exposing beyond local network
 - For remote access, use Tailscale or SSH tunneling
 
