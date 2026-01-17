@@ -2,7 +2,7 @@
   <img src="https://raw.githubusercontent.com/raullenchai/claw/main/.github/logo.svg" width="120" alt="Claw Logo">
 </p>
 
-<h1 align="center">Claw</h1>
+<h1 align="center">Claw (CLaude AnyWhere) </h1>
 
 <p align="center">
   <strong>CL</strong>aude <strong>A</strong>ny<strong>W</strong>here — Control Claude Code from anywhere
