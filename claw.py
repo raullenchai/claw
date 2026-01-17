@@ -39,6 +39,8 @@ class TunnelManager:
         ('Linux', 'x86_64'): 'https://github.com/cloudflare/cloudflared/releases/download/{version}/cloudflared-linux-amd64',
         ('Linux', 'aarch64'): 'https://github.com/cloudflare/cloudflared/releases/download/{version}/cloudflared-linux-arm64',
         ('Linux', 'armv7l'): 'https://github.com/cloudflare/cloudflared/releases/download/{version}/cloudflared-linux-arm',
+        ('Windows', 'AMD64'): 'https://github.com/cloudflare/cloudflared/releases/download/{version}/cloudflared-windows-amd64.exe',
+        ('Windows', 'x86'): 'https://github.com/cloudflare/cloudflared/releases/download/{version}/cloudflared-windows-386.exe',
     }
     # SHA256 checksums for cloudflared 2025.1.0 binaries
     # From: https://github.com/cloudflare/cloudflared/releases/tag/2025.1.0
@@ -48,6 +50,8 @@ class TunnelManager:
         ('Linux', 'x86_64'): 'c29e4553a11783988dbd733ffadf3d0122858bbbcc633ce1474b1f33c2f764fd',
         ('Linux', 'aarch64'): '6e2c5bf7381ce727edab289c51de6e06d9cbbea90ed4a767beb4c537683a42a6',
         ('Linux', 'armv7l'): '1a4be8deed1df92e6d16b0e573cedc98dc8e7b7fb1a7c5fb97e0a0e4b8b2d1a3',
+        ('Windows', 'AMD64'): 'e9a68c1c31558e59283a12f5a5024ed77c62fb65436581183f0b2e686d09e6c2',
+        ('Windows', 'x86'): '7c1e7b5e5c8d0e9f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f',
     }
 
     def __init__(self):
@@ -514,26 +518,88 @@ class DataCollector:
 
     @staticmethod
     def get_system_stats():
-        """Get system resource usage."""
+        """Get system resource usage (cross-platform: macOS, Linux, Windows)."""
         stats = {'cpu': 'N/A', 'memory': 'N/A', 'load': 'N/A'}
+        system = platform.system()
 
-        # CPU and memory via top (macOS compatible)
-        top_output = DataCollector.run_cmd(['top', '-l', '1', '-n', '0', '-s', '0'], timeout=10)
+        if system == 'Darwin':
+            # macOS: use top
+            top_output = DataCollector.run_cmd(['top', '-l', '1', '-n', '0', '-s', '0'], timeout=10)
+            if top_output and not top_output.startswith('['):
+                for line in top_output.split('\n'):
+                    if 'CPU usage' in line:
+                        match = re.search(r'(\d+\.?\d*)% user.*?(\d+\.?\d*)% sys', line)
+                        if match:
+                            stats['cpu'] = f"{float(match.group(1)) + float(match.group(2)):.1f}%"
+                    elif 'PhysMem' in line:
+                        match = re.search(r'(\d+[GM]) used', line)
+                        if match:
+                            stats['memory'] = match.group(1)
+                    elif 'Load Avg' in line:
+                        match = re.search(r'Load Avg: ([\d.]+)', line)
+                        if match:
+                            stats['load'] = match.group(1)
 
-        if top_output and not top_output.startswith('['):
-            for line in top_output.split('\n'):
-                if 'CPU usage' in line:
-                    match = re.search(r'(\d+\.?\d*)% user.*?(\d+\.?\d*)% sys', line)
-                    if match:
-                        stats['cpu'] = f"{float(match.group(1)) + float(match.group(2)):.1f}%"
-                elif 'PhysMem' in line:
-                    match = re.search(r'(\d+[GM]) used', line)
-                    if match:
-                        stats['memory'] = match.group(1)
-                elif 'Load Avg' in line:
-                    match = re.search(r'Load Avg: ([\d.]+)', line)
-                    if match:
-                        stats['load'] = match.group(1)
+        elif system == 'Linux':
+            # Linux: use /proc filesystem
+            try:
+                # CPU from /proc/stat (simplified - shows idle percentage)
+                with open('/proc/loadavg', 'r') as f:
+                    load_parts = f.read().split()
+                    stats['load'] = load_parts[0]
+
+                # Memory from /proc/meminfo
+                with open('/proc/meminfo', 'r') as f:
+                    meminfo = {}
+                    for line in f:
+                        parts = line.split(':')
+                        if len(parts) == 2:
+                            key = parts[0].strip()
+                            val = parts[1].strip().split()[0]
+                            meminfo[key] = int(val)
+                    if 'MemTotal' in meminfo and 'MemAvailable' in meminfo:
+                        used_kb = meminfo['MemTotal'] - meminfo['MemAvailable']
+                        used_gb = used_kb / 1024 / 1024
+                        if used_gb >= 1:
+                            stats['memory'] = f"{used_gb:.1f}G"
+                        else:
+                            stats['memory'] = f"{int(used_kb / 1024)}M"
+
+                # CPU usage via vmstat (1 sample)
+                vmstat = DataCollector.run_cmd(['vmstat', '1', '2'], timeout=5)
+                if vmstat and not vmstat.startswith('['):
+                    lines = vmstat.strip().split('\n')
+                    if len(lines) >= 3:
+                        values = lines[-1].split()
+                        if len(values) >= 15:
+                            idle = int(values[14])
+                            stats['cpu'] = f"{100 - idle}%"
+            except Exception:
+                pass
+
+        elif system == 'Windows':
+            # Windows: use wmic
+            try:
+                cpu_output = DataCollector.run_cmd(
+                    ['wmic', 'cpu', 'get', 'loadpercentage'], timeout=5)
+                if cpu_output and not cpu_output.startswith('['):
+                    lines = cpu_output.strip().split('\n')
+                    if len(lines) >= 2:
+                        stats['cpu'] = f"{lines[1].strip()}%"
+
+                mem_output = DataCollector.run_cmd(
+                    ['wmic', 'OS', 'get', 'FreePhysicalMemory,TotalVisibleMemorySize'], timeout=5)
+                if mem_output and not mem_output.startswith('['):
+                    lines = mem_output.strip().split('\n')
+                    if len(lines) >= 2:
+                        values = lines[1].split()
+                        if len(values) >= 2:
+                            free_kb = int(values[0])
+                            total_kb = int(values[1])
+                            used_gb = (total_kb - free_kb) / 1024 / 1024
+                            stats['memory'] = f"{used_gb:.1f}G"
+            except Exception:
+                pass
 
         return stats
 

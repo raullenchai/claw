@@ -162,12 +162,17 @@ claw --share
 
   ✓  Tunnel ready!
   →  Public: https://random-words.trycloudflare.com  ← Use this!
+
+  🔐 Authentication Required
+  →  Username: any (or leave blank)
+  →  Password: xK7mN2pQ9rT4
 ```
 
 - ✅ Works through any firewall/NAT
 - ✅ No signup required
 - ✅ Completely free
-- ⚠️ URL changes each time you restart Claw
+- ✅ Password-protected (auto-generated)
+- ⚠️ URL and password change each time you restart
 
 **First run downloads `cloudflared` (~25MB) automatically.**
 
@@ -253,19 +258,25 @@ Access via your Tailscale IP: `http://100.x.x.x:8080`
 
 ## Security
 
-> ⚠️ **Warning:** Claw has no built-in authentication. Be mindful of who can access it.
-
 **Safe by default:**
 - Binds to `localhost` only — your computer only
+- `--share` requires password authentication (auto-generated)
 - `--share` uses HTTPS (encrypted via Cloudflare)
 - Input validation prevents command injection
 - Control keys are whitelisted
+- Content Security Policy headers prevent XSS
+
+**When using `--share`:**
+- A random password is generated and displayed at startup
+- You must enter this password when accessing from your phone
+- The password changes each time you restart Claw
 
 **When using `-b 0.0.0.0` (local network access):**
+- No authentication required (trusted network)
 - Anyone on your WiFi can access Claw
 - Fine for home networks, be careful on public WiFi
 
-**For extra security:**
+**For extra security on local network:**
 ```bash
 # SSH tunnel (if you have a server)
 ssh -L 8080:localhost:8080 your-server
@@ -277,6 +288,17 @@ ssh -L 8080:localhost:8080 your-server
 - **Python 3.8+** (standard library only, no pip install needed)
 - **tmux** (for session management)
 - **git** (optional, for repository info)
+
+## Platform Support
+
+| Platform | Basic Usage | `--share` | System Stats |
+|----------|-------------|-----------|--------------|
+| **macOS** (Intel/Apple Silicon) | ✅ | ✅ | ✅ |
+| **Linux** (x64/ARM) | ✅ | ✅ | ✅ |
+| **Windows** (x64/x86) | ✅ | ✅ | ✅ |
+| **WSL** | ✅ | ✅ | ✅ |
+
+> **Note:** Windows requires tmux via WSL or similar. Native Windows terminal monitoring is not supported.
 
 ## Troubleshooting
 
