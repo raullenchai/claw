@@ -11,6 +11,7 @@
 </p>
 
 <p align="center">
+  <a href="https://pypi.org/project/claw-cli/"><img src="https://img.shields.io/pypi/v/claw-cli.svg" alt="PyPI"></a>
   <a href="https://github.com/raullenchai/claw/actions"><img src="https://github.com/raullenchai/claw/workflows/CI/badge.svg" alt="CI"></a>
   <a href="https://github.com/raullenchai/claw/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python"></a>
@@ -57,30 +58,33 @@ Open the URL on your phone. That's it.
 
 ## Installation
 
-### Option 1: Direct Download
+### Option 1: pipx (recommended)
+
+```bash
+pipx install claw-cli
+claw --share
+```
+
+### Option 2: pip
+
+```bash
+pip install claw-cli
+claw --share
+```
+
+### Option 3: Direct Download
 
 ```bash
 curl -O https://raw.githubusercontent.com/raullenchai/claw/main/claw.py
-python3 claw.py
+python3 claw.py --share
 ```
 
-### Option 2: Clone Repository
+### Option 4: Clone Repository
 
 ```bash
 git clone https://github.com/raullenchai/claw.git
 cd claw
-python3 claw.py
-```
-
-### Option 3: Add to PATH (recommended)
-
-```bash
-# Download
-curl -o ~/.local/bin/claw https://raw.githubusercontent.com/raullenchai/claw/main/claw.py
-chmod +x ~/.local/bin/claw
-
-# Now run from anywhere
-claw
+python3 claw.py --share
 ```
 
 ## Usage
